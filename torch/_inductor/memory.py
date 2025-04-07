@@ -657,3 +657,102 @@ def reorder_for_peak_memory(
     best_result = min(peak_memory_diff_methods, key=lambda x: x.peak_memory)
 
     return best_result.order
+
+
+def ilp_peak_mem(
+    tensor_sizes: list[float],
+    op_extra_sizes: list[float],
+    op_input_tensors: list[set[int]],
+    input_tensors: set[int],
+    ancestors: list[set[int]],
+) -> tuple[list[int], float]:
+    """Returns the list of timesteps each operator is schedued at and the peak memory usage"""
+    import pulp
+
+    num_ops = len(op_extra_sizes)
+    num_steps = num_ops + 1
+    assert len(op_input_tensors) == num_ops
+    assert len(ancestors) == num_ops
+    num_tensors = len(tensor_sizes)
+    all_tensors = set(range(num_tensors))
+    assert input_tensors.issubset(all_tensors)
+    assert all(inputs.issubset(all_tensors) for inputs in op_input_tensors)
+
+    op_schedule_vars = [
+        [pulp.LpVariable(f"O_{i},{j}", cat="Binary") for j in range(num_steps)]
+        for i in range(num_ops)
+    ]
+    tensor_stored_vars = [
+        [pulp.LpVariable(f"T_{i},{j}", cat="Binary") for j in range(num_steps)]
+        for i in range(num_tensors)
+    ]
+
+    mem = pulp.LpVariable("mem")
+
+    problem = pulp.LpProblem("ilp_peak_mem", pulp.LpMinimize)
+    # constraint 1
+    for i in range(1, num_ops + 1):
+        problem += sum(op_schedule_vars[i]) == 1
+    # constraint 2
+    for j in range(num_steps):
+        problem += sum((op_schedule_vars[i][j] for i in range(num_ops))) == 1
+    # constraint 3
+    for i in range(num_ops):
+        for j in range(num_steps):
+            for k in op_input_tensors[i]:
+                problem += op_schedule_vars[i][j] <= tensor_stored_vars[k][j]
+    # constraint 4
+    for i in range(num_ops):
+        for j in range(1, num_steps):
+            problem += (
+                tensor_stored_vars[i][j]
+                <= tensor_stored_vars[i][j - 1] + op_schedule_vars[i][j]
+            )
+    # constraint 5
+    for tensor in all_tensors - input_tensors:
+        problem += tensor_stored_vars[tensor][0] == 0
+    # constraint 6
+    for j in range(num_steps):
+        transient_footprint = sum(
+            tensor_stored_vars[i][j] * tensor_sizes[i] for i in range(num_tensors)
+        )
+        for k in range(num_ops):
+            problem += (
+                transient_footprint + op_extra_sizes[k] * op_schedule_vars[k][j] <= mem
+            )
+
+    # optimization constraints 7 and 8
+    for i in range(num_ops):
+        num_ancestors = len(ancestors[i])
+        for j in range(1, num_ancestors + 1):
+            problem += op_schedule_vars[i][j] == 0
+            problem += tensor_stored_vars[i][j] == 0
+
+    # optimization constraint 9
+    for i in range(num_ops):
+        num_descendents = sum(1 for anc in ancestors if i in anc)
+        for j in range(num_steps - num_descendents, num_steps):
+            problem += op_schedule_vars[i][j] == 0
+
+    # optimization constraint 10
+    for i in range(num_tensors):
+        uses = (j for j in range(num_ops) if i in op_input_tensors[j])
+        num_descendents = (sum(1 for anc in ancestors if j in anc) for j in uses)
+        max_descendents = max(num_descendents)
+        for j in range(num_steps - max_descendents, num_steps):
+            problem += tensor_stored_vars[i][j] == 0
+
+    solver = pulp.LpSolver(msg=False)
+    status = problem.solve(solver)
+    assert status == 1
+
+    op_timesteps = [0] * num_ops
+    for i in range(num_ops):
+        for j in range(num_steps):
+            if pulp.value(op_schedule_vars[i][j]) == 1:
+                op_timesteps[i] = j
+                break
+
+    peak_mem = pulp.value(mem)
+    assert isinstance(peak_mem, float)
+    return op_timesteps, peak_mem
