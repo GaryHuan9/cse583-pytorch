@@ -13,6 +13,7 @@ import pprint
 import textwrap
 import traceback
 import typing
+import metis
 from collections import Counter, defaultdict
 from typing import Any, Callable, Generic, Optional, TYPE_CHECKING, TypeVar, Union
 
@@ -1144,6 +1145,8 @@ class SchedulerNode(BaseSchedulerNode):
         return self.node if isinstance(self.node, ir.TemplateBuffer) else None
 
     def run(self, *index_vars: Sequence[sympy.Expr]) -> None:
+        print("we're running")
+        breakpoint()
         self.decide_inplace_update()
         self.mark_run()
         self.codegen(index_vars)
@@ -4214,29 +4217,80 @@ class Scheduler:
         Given a list of BaseSchedulerNodes, split into a list of
         graph partitions and compute partition input/output signatures.
         """
-        partitions: list[PartitionType] = []
 
-        skip_cudagraph = True
-        cur_partition: PartitionType = []
-        skip_cudagraphs = []
-        for node in self.nodes:
-            should_partition = self.should_partition(node)
-            if cur_partition and skip_cudagraph != should_partition:
-                partitions.append(cur_partition)
-                skip_cudagraphs.append(skip_cudagraph)
-                cur_partition = []
+        print("your code now uh oh")
+        breakpoint()
+        
+        all_nodes = self.nodes
+        graph = [[] for i in range(len(all_nodes))]
 
-            skip_cudagraph = should_partition
-            cur_partition.append(node)
+        dictionary = {}
+        for i, node in enumerate(all_nodes):
+            dictionary[node.get_name()] = i
+            #graph.append([])
 
-        if cur_partition:
-            partitions.append(cur_partition)
-            skip_cudagraphs.append(skip_cudagraph)
+        #self.nodes[0].outputs[0].mpi_buffer.size_alloc
+        for node in all_nodes:
+            node_idx = dictionary[node.get_name()]
+            if not isinstance(node, FusedSchedulerNode):
+                weight = node.outputs[0].mpi_buffer.size_alloc
+                successor_set = node.outputs[0].mpi_buffer.succ_nodes 
+                for succ in successor_set:
+                    succ_idx = dictionary[succ.get_name()]
+                    graph[node_idx].append((succ_idx, weight))
+                    graph[succ_idx].append((node_idx, weight))
+                    #print(succ.get_name())
+            else: #fused
+                sub_nodes = node.get_nodes()
+                for sub_node in sub_nodes:
+                    successor_set = sub_node.outputs[0].mpi_buffer.succ_nodes 
+                    for succ in successor_set:
+                        succ_idx = dictionary[succ.get_name()]
+                        graph[node_idx].append((succ_idx, weight))
+                        graph[succ_idx].append((node_idx, weight))
+                        
+
+        print(graph)
+        print("METIS METIS")
+        metis_graph = metis.adjlist_to_metis(graph)
+        k = 5
+        part = metis.part_graph(metis_graph, k)
+        print(part)
+
+        part_assignments = part[1]
+
+        partitions: list[PartitionType] = [[] for i in range(k)] 
+        for i, part_num in enumerate(part_assignments):
+            partitions[part_num].append(all_nodes[i])
 
         signatures = self.get_graph_partition_signature(
             partitions=partitions, skip_cudagraphs=skip_cudagraphs
         )
         self.compute_graph_partition_maps(signatures)
+        breakpoint()
+        # partitions: list[PartitionType] = []
+
+        # skip_cudagraph = True
+        # cur_partition: PartitionType = []
+        # skip_cudagraphs = []
+        # for node in self.nodes:
+        #     should_partition = self.should_partition(node)
+        #     if cur_partition and skip_cudagraph != should_partition:
+        #         partitions.append(cur_partition)
+        #         skip_cudagraphs.append(skip_cudagraph)
+        #         cur_partition = []
+
+        #     skip_cudagraph = should_partition
+        #     cur_partition.append(node)
+
+        # if cur_partition:
+        #     partitions.append(cur_partition)
+        #     skip_cudagraphs.append(skip_cudagraph)
+
+        # signatures = self.get_graph_partition_signature(
+        #     partitions=partitions, skip_cudagraphs=skip_cudagraphs
+        # )
+        # self.compute_graph_partition_maps(signatures)
 
         return partitions, signatures
 
@@ -4280,6 +4334,8 @@ class Scheduler:
         This allows further applying different optimizations (e.g., cudagraph) to
         each function.
         """
+        breakpoint()
+        print("we graph partition")
         partitions, signatures = self.graph_partition()
 
         for partition, signature in zip(partitions, signatures):
