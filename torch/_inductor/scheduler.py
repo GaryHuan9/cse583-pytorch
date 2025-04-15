@@ -4218,11 +4218,12 @@ class Scheduler:
         graph partitions and compute partition input/output signatures.
         """
 
-        print("your code now uh oh")
+        print("your code now uh ")
         breakpoint()
         
         all_nodes = self.nodes
         graph = [[] for i in range(len(all_nodes))]
+        
 
         dictionary = {}
         for i, node in enumerate(all_nodes):
@@ -4254,20 +4255,59 @@ class Scheduler:
         print("METIS METIS")
         metis_graph = metis.adjlist_to_metis(graph)
         k = 5
-        part = metis.part_graph(metis_graph, k)
-        print(part)
+        part = metis.part_graph(metis_graph, k, contig=True)
+        #print(part)
 
         part_assignments = part[1]
 
         partitions: list[PartitionType] = [[] for i in range(k)] 
+        #cur_partition: PartitionType = []
         for i, part_num in enumerate(part_assignments):
             partitions[part_num].append(all_nodes[i])
 
-        signatures = self.get_graph_partition_signature(
+        #skip_cudagraphs = [True for i in range(len(all_nodes))]
+
+        partitions = [p for p in partitions if len(p) > 0]
+
+        skip_cudagraphs = [True]*len(partitions)
+
+        print(partitions)
+        print(skip_cudagraphs)
+
+        #print(partitions)
+
+        # new_partition : list[PartitionType] = [] 
+        # part1 = []
+        # part2 = []
+        # for i, node in enumerate(all_nodes[:len(all_nodes)//2]):
+        #     part1.append(node)
+        # for i, node in enumerate(all_nodes[len(all_nodes)//2:]):
+        #     part2.append(node)
+        # new_partition.append(part1)
+        # new_partition.append(part2)
+
+        # one_partition : list[PartitionType] = []
+        # one_part = []
+        # for i, node in enumerate(all_nodes):
+        #     one_part.append(node) 
+        # one_partition.append(one_part)
+
+        # skip_cudagraphs = [True,True]
+
+        # print("OUR ONE PARTITION")
+        # print(one_partition)
+        # print(skip_cudagraphs)
+
+        our_signatures = self.get_graph_partition_signature(
             partitions=partitions, skip_cudagraphs=skip_cudagraphs
         )
-        self.compute_graph_partition_maps(signatures)
+
+        # print("our sigs",signatures)
+        # self.compute_graph_partition_maps(signatures)
         breakpoint()
+        
+
+        # #THEIR CODE
         # partitions: list[PartitionType] = []
 
         # skip_cudagraph = True
@@ -4291,8 +4331,16 @@ class Scheduler:
         #     partitions=partitions, skip_cudagraphs=skip_cudagraphs
         # )
         # self.compute_graph_partition_maps(signatures)
+        # # print("Their sigs:",signatures)
 
-        return partitions, signatures
+        # print("THEIR PARTITION")
+        # print(partitions)
+        # print(skip_cudagraphs)
+
+        # print("Difference between partitions",one_partition == partitions)
+        # print("DIFFERENCE BETWEEN TWO:",our_signatures == signatures)
+
+        return partitions, our_signatures
 
     def codegen(self) -> None:
         with dynamo_timed("Scheduler.codegen"):
