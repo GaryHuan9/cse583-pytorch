@@ -4,6 +4,7 @@ import collections
 import dataclasses
 import heapq
 import logging
+import numpy as np
 from typing import Callable, TYPE_CHECKING, TypedDict, Union
 
 from torch._utils_internal import signpost_event
@@ -594,6 +595,7 @@ def reorder_for_peak_memory(
     Try a few heuristics based topological sort algorithms, and pick the one whose
     resulting topological order has the lowest peak memory estimation.
     """
+    breakpoint()
 
     torch_log.info("Reordering for peak memory -- %d nodes", len(nodes))
 
@@ -659,100 +661,198 @@ def reorder_for_peak_memory(
     return best_result.order
 
 
+def reorder_for_peak_memory(
+    nodes: list[BaseSchedulerNode],
+    name_to_buf: dict[str, SchedulerBuffer],
+    name_to_fused_node: dict[str, BaseSchedulerNode],
+    graph_inputs: OrderedSet[str],
+    graph_outputs: OrderedSet[str],
+    _methods=None,
+) -> list[BaseSchedulerNode]:
+    breakpoint()
+
+    name_to_freeable_input_buf: dict[str, FreeableInputBuffer] = get_freeable_input_buf(
+        nodes, graph_inputs
+    )
+    assign_memory_planning_info_for_scheduler_buffers(nodes, name_to_buf)
+    assign_memory_planning_info_for_scheduler_nodes(
+        nodes, name_to_fused_node, name_to_buf, name_to_freeable_input_buf
+    )
+
+    buffer_sizes = {
+        name: buf.mpi_buffer.size_free
+        for node in nodes
+        for name, buf in node.outputs_by_name.items()
+    }
+    for name, buf in name_to_freeable_input_buf.items():
+        buffer_sizes[name] = buf.mpi_buffer.size_free
+    op_extra_sizes = {op.get_name(): 0 for op in nodes}
+    op_input_buffers = {
+        op.get_name(): {
+            dep.name for dep in op.unmet_dependencies if dep.name in buffer_sizes
+        }
+        for op in nodes
+    }
+    op_output_buffers = {op.get_name(): set(op.outputs_by_name.keys()) for op in nodes}
+    op_ancestors = {
+        op.get_name(): {name_to_fused_node[ancestor] for ancestor in op.ancestors}
+        for op in nodes
+    }
+
+    input_buffers = {buf for buf in graph_inputs if buf in buffer_sizes}
+
+    order, mem = ilp_peak_mem(
+        buffer_sizes,
+        op_extra_sizes,
+        op_input_buffers,
+        op_output_buffers,
+        op_ancestors,
+        input_buffers,
+    )
+
+    breakpoint()
+    nodes.sort(key=lambda node: order[node.get_name()])
+
+    return nodes
+
+
 def ilp_peak_mem(
-    tensor_sizes: list[float],
-    op_extra_sizes: list[float],
-    op_input_tensors: list[set[int]],
-    input_tensors: set[int],
-    ancestors: list[set[int]],
-) -> tuple[list[int], float]:
-    """Returns the list of timesteps each operator is schedued at and the peak memory usage"""
+    buffer_sizes: dict[str, int],
+    op_extra_sizes: dict[str, int],
+    op_input_buffers: dict[str, set[str]],
+    op_output_buffers: dict[str, set[str]],
+    op_ancestors: dict[str, set[str]],
+    input_buffers: set[str],
+) -> tuple[dict[str, int], int]:
+    """Returns a mapping of timesteps each operator is schedued at and the peak memory usage"""
     import pulp
 
+    all_ops = op_extra_sizes.keys()
+    assert op_extra_sizes.keys() == op_input_buffers.keys()
+    assert op_extra_sizes.keys() == op_output_buffers.keys()
     num_ops = len(op_extra_sizes)
     num_steps = num_ops + 1
-    assert len(op_input_tensors) == num_ops
-    assert len(ancestors) == num_ops
-    num_tensors = len(tensor_sizes)
-    all_tensors = set(range(num_tensors))
-    assert input_tensors.issubset(all_tensors)
-    assert all(inputs.issubset(all_tensors) for inputs in op_input_tensors)
+    assert len(op_input_buffers) == num_ops
 
-    op_schedule_vars = [
-        [pulp.LpVariable(f"O_{i},{j}", cat="Binary") for j in range(num_steps)]
-        for i in range(num_ops)
-    ]
-    tensor_stored_vars = [
-        [pulp.LpVariable(f"T_{i},{j}", cat="Binary") for j in range(num_steps)]
-        for i in range(num_tensors)
-    ]
+    all_buffers = buffer_sizes.keys()
+    assert input_buffers.issubset(all_buffers)
+    assert all(inputs.issubset(all_buffers) for inputs in op_input_buffers.values())
+
+    buffer_producers = {
+        buffer: op for op, buffers in op_output_buffers.items() for buffer in buffers
+    }
+
+    op_schedule_vars = {
+        op: [
+            pulp.LpVariable(f"O_{op},{step}", cat="Binary") for step in range(num_steps)
+        ]
+        for op in all_ops
+    }
+    buffer_stored_vars = {
+        buffer: [
+            pulp.LpVariable(f"T_{buffer},{step}", cat="Binary")
+            for step in range(num_steps)
+        ]
+        for buffer in all_buffers
+    }
 
     mem = pulp.LpVariable("mem")
 
     problem = pulp.LpProblem("ilp_peak_mem", pulp.LpMinimize)
+
+    # minimize peak memory
+    problem += mem
+
     # constraint 1
-    for i in range(1, num_ops + 1):
-        problem += sum(op_schedule_vars[i]) == 1
+    # each operation can only be scheduled once
+    for op in all_ops:
+        problem += sum(op_schedule_vars[op]) == 1
+
     # constraint 2
-    for j in range(num_steps):
-        problem += sum((op_schedule_vars[i][j] for i in range(num_ops))) == 1
+    # each step can only schedule one op
+    for step in range(num_steps):
+        problem += sum((op_schedule_vars[op][step] for op in all_ops)) == 1
+
     # constraint 3
-    for i in range(num_ops):
-        for j in range(num_steps):
-            for k in op_input_tensors[i]:
-                problem += op_schedule_vars[i][j] <= tensor_stored_vars[k][j]
+    # op can only be scheduled if its input buffers are available
+    for op in all_ops:
+        for step in range(num_steps):
+            for input in op_input_buffers[op]:
+                problem += op_schedule_vars[op][step] <= buffer_stored_vars[input][step]
+
     # constraint 4
-    for i in range(num_ops):
-        for j in range(1, num_steps):
+    # a buffer is stored at time t if it was produced or stored at time t - 1
+    for buffer in all_buffers:
+        for step in range(1, num_steps):
             problem += (
-                tensor_stored_vars[i][j]
-                <= tensor_stored_vars[i][j - 1] + op_schedule_vars[i][j]
+                buffer_stored_vars[buffer][step]
+                <= buffer_stored_vars[buffer][step - 1]
+                + op_schedule_vars[buffer_producers[buffer]][step]
             )
+
     # constraint 5
-    for tensor in all_tensors - input_tensors:
-        problem += tensor_stored_vars[tensor][0] == 0
+    # only input buffers are stored at step 0
+    for buffer in all_buffers - input_buffers:
+        problem += buffer_stored_vars[buffer][0] == 0
+
     # constraint 6
-    for j in range(num_steps):
+    # peak memory must be larger than all stable footprints
+    for step in range(num_steps):
         transient_footprint = sum(
-            tensor_stored_vars[i][j] * tensor_sizes[i] for i in range(num_tensors)
+            buffer_stored_vars[buffer][step] * buffer_sizes[buffer]
+            for buffer in all_buffers
         )
-        for k in range(num_ops):
+        for op in all_ops:
             problem += (
-                transient_footprint + op_extra_sizes[k] * op_schedule_vars[k][j] <= mem
+                transient_footprint + op_extra_sizes[op] * op_schedule_vars[op][step]
+                <= mem
             )
 
     # optimization constraints 7 and 8
-    for i in range(num_ops):
-        num_ancestors = len(ancestors[i])
-        for j in range(1, num_ancestors + 1):
-            problem += op_schedule_vars[i][j] == 0
-            problem += tensor_stored_vars[i][j] == 0
+    # operator must be executed after all its ancestors
+    # buffer cannot be stored in memory until all its producers' ancestors have been executed
+    for op in all_ops:
+        num_ancestors = len(op_ancestors[op])
+        for step in range(1, num_ancestors + 1):
+            problem += op_schedule_vars[op][step] == 0
+            for buffer in op_output_buffers[op]:
+                problem += buffer_stored_vars[buffer][step] == 0
 
     # optimization constraint 9
-    for i in range(num_ops):
-        num_descendents = sum(1 for anc in ancestors if i in anc)
-        for j in range(num_steps - num_descendents, num_steps):
-            problem += op_schedule_vars[i][j] == 0
+    # operator must be executed before all its decendents
+    for op in all_ops:
+        # number of descendents is the number of ops which have this op as their ancestor
+        num_descendents = sum(
+            1 for ancestors in op_ancestors.values() if op in ancestors
+        )
+        for step in range(num_steps - num_descendents, num_steps):
+            problem += op_schedule_vars[op][step] == 0
 
     # optimization constraint 10
-    for i in range(num_tensors):
-        uses = (j for j in range(num_ops) if i in op_input_tensors[j])
-        num_descendents = (sum(1 for anc in ancestors if j in anc) for j in uses)
-        max_descendents = max(num_descendents)
-        for j in range(num_steps - max_descendents, num_steps):
-            problem += tensor_stored_vars[i][j] == 0
+    # buffer can be removed once all its users have been executed
+    for buffer in all_buffers:
+        uses = (op for op in all_ops if buffer in op_input_buffers[op])
+        num_descendents = [
+            sum(1 for ancestor in op_ancestors if op in ancestor) for op in uses
+        ]
+        max_descendents = max(num_descendents + [0])
+        for step in range(num_steps - max_descendents, num_steps):
+            problem += buffer_stored_vars[buffer][step] == 0
 
-    solver = pulp.LpSolver(msg=False)
+    breakpoint()
+    solver = pulp.getSolver("PULP_CBC_CMD", msg=False)
     status = problem.solve(solver)
     assert status == 1
 
-    op_timesteps = [0] * num_ops
-    for i in range(num_ops):
-        for j in range(num_steps):
-            if pulp.value(op_schedule_vars[i][j]) == 1:
-                op_timesteps[i] = j
+    op_timesteps = {}
+    for op in all_ops:
+        for step in range(num_steps):
+            if pulp.value(op_schedule_vars[op][step]) == 1:
+                op_timesteps[op] = step
                 break
 
+    assert len(op_timesteps) == num_ops
+
     peak_mem = pulp.value(mem)
-    assert isinstance(peak_mem, float)
+    assert isinstance(peak_mem, int)
     return op_timesteps, peak_mem
