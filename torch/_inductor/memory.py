@@ -770,15 +770,18 @@ def ilp_peak_mem(
 
     # constraint 2
     # each step can only schedule one op
-    for step in range(num_steps):
+    problem += sum((op_schedule_vars[op][0] for op in all_ops)) == 0
+    for step in range(1, num_steps):
         problem += sum((op_schedule_vars[op][step] for op in all_ops)) == 1
 
     # constraint 3
     # op can only be scheduled if its input buffers are available
     for op in all_ops:
-        for step in range(num_steps):
+        for step in range(1, num_steps):
             for input in op_input_buffers[op]:
-                problem += op_schedule_vars[op][step] <= buffer_stored_vars[input][step]
+                problem += (
+                    op_schedule_vars[op][step] <= buffer_stored_vars[input][step - 1]
+                )
 
     # constraint 4
     # a buffer is stored at time t if it was produced or stored at time t - 1
@@ -791,12 +794,12 @@ def ilp_peak_mem(
             )
 
     # constraint 5
-    # only input buffers are stored at step 0
+    # non-input buffers are not stored at step 0
     for buffer in all_buffers - input_buffers:
         problem += buffer_stored_vars[buffer][0] == 0
 
     # constraint 6
-    # peak memory must be larger than all stable footprints
+    # peak memory must be larger than all footprints
     for step in range(num_steps):
         transient_footprint = sum(
             buffer_stored_vars[buffer][step] * buffer_sizes[buffer]
@@ -808,39 +811,39 @@ def ilp_peak_mem(
                 <= mem
             )
 
-    # optimization constraints 7 and 8
-    # operator must be executed after all its ancestors
-    # buffer cannot be stored in memory until all its producers' ancestors have been executed
-    for op in all_ops:
-        num_ancestors = len(op_ancestors[op])
-        for step in range(1, num_ancestors + 1):
-            problem += op_schedule_vars[op][step] == 0
-            for buffer in op_output_buffers[op]:
-                problem += buffer_stored_vars[buffer][step] == 0
-
-    # optimization constraint 9
-    # operator must be executed before all its decendents
-    for op in all_ops:
-        # number of descendents is the number of ops which have this op as their ancestor
-        num_descendents = sum(
-            1 for ancestors in op_ancestors.values() if op in ancestors
-        )
-        for step in range(num_steps - num_descendents, num_steps):
-            problem += op_schedule_vars[op][step] == 0
-
-    # optimization constraint 10
-    # buffer can be removed once all its users have been executed
-    for buffer in all_buffers:
-        uses = (op for op in all_ops if buffer in op_input_buffers[op])
-        num_descendents = [
-            sum(1 for ancestor in op_ancestors if op in ancestor) for op in uses
-        ]
-        max_descendents = max(num_descendents + [0])
-        for step in range(num_steps - max_descendents, num_steps):
-            problem += buffer_stored_vars[buffer][step] == 0
+    # # optimization constraints 7 and 8
+    # # operator must be executed after all its ancestors
+    # # buffer cannot be stored in memory until all its producers' ancestors have been executed
+    # for op in all_ops:
+    #     num_ancestors = len(op_ancestors[op])
+    #     for step in range(1, num_ancestors + 1):
+    #         problem += op_schedule_vars[op][step] == 0
+    #         for buffer in op_output_buffers[op]:
+    #             problem += buffer_stored_vars[buffer][step] == 0
+    #
+    # # optimization constraint 9
+    # # operator must be executed before all its decendents
+    # for op in all_ops:
+    #     # number of descendents is the number of ops which have this op as their ancestor
+    #     num_descendents = sum(
+    #         1 for ancestors in op_ancestors.values() if op in ancestors
+    #     )
+    #     for step in range(num_steps - num_descendents, num_steps):
+    #         problem += op_schedule_vars[op][step] == 0
+    #
+    # # optimization constraint 10
+    # # buffer can be removed once all its users have been executed
+    # for buffer in all_buffers:
+    #     uses = (op for op in all_ops if buffer in op_input_buffers[op])
+    #     num_descendents = [
+    #         sum(1 for ancestor in op_ancestors if op in ancestor) for op in uses
+    #     ]
+    #     max_descendents = max(num_descendents + [0])
+    #     for step in range(num_steps - max_descendents, num_steps):
+    #         problem += buffer_stored_vars[buffer][step] == 0
 
     breakpoint()
-    solver = pulp.getSolver("PULP_CBC_CMD", msg=False)
+    solver = pulp.getSolver("PULP_CBC_CMD", msg=True)
     status = problem.solve(solver)
     assert status == 1
 
@@ -850,9 +853,10 @@ def ilp_peak_mem(
             if pulp.value(op_schedule_vars[op][step]) == 1:
                 op_timesteps[op] = step
                 break
+    breakpoint()
 
     assert len(op_timesteps) == num_ops
 
     peak_mem = pulp.value(mem)
-    assert isinstance(peak_mem, int)
-    return op_timesteps, peak_mem
+    assert isinstance(peak_mem, float) and (peak_mem % 1) == 0.0
+    return op_timesteps, int(peak_mem)
