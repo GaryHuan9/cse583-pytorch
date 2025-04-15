@@ -849,7 +849,7 @@ class BaseSchedulerNode:
 
         prologue = nodes[:template_index]
         template_node = nodes[template_index]
-        epilogue = nodes[template_index + 1 :]
+        epilogue = nodes[template_index + 1:]
         return prologue, template_node, epilogue
 
 
@@ -1747,7 +1747,7 @@ class ForeachKernelSchedulerNode(FusedSchedulerNode):
         for nodes in sorted_nodes:
             grouped_nodes.extend(
                 [
-                    nodes[i : i + max_num_nodes]
+                    nodes[i: i + max_num_nodes]
                     for i in range(0, len(nodes), max_num_nodes)
                 ]
             )
@@ -3119,7 +3119,7 @@ class Scheduler:
 
         def check_all_pairs(nodes: list[BaseSchedulerNode]) -> None:
             for node1_index, node1 in enumerate(nodes):
-                for node2 in nodes[node1_index + 1 :]:
+                for node2 in nodes[node1_index + 1:]:
                     key = (node1, node2)
                     if key in seen:
                         continue
@@ -4220,63 +4220,67 @@ class Scheduler:
 
         print("your code now uh ")
         breakpoint()
-        
+
         all_nodes = self.nodes
         graph = [[] for i in range(len(all_nodes))]
-        
 
         dictionary = {}
         for i, node in enumerate(all_nodes):
             dictionary[node.get_name()] = i
-            #graph.append([])
+            # graph.append([])
 
-        #self.nodes[0].outputs[0].mpi_buffer.size_alloc
+        # self.nodes[0].outputs[0].mpi_buffer.size_alloc
         for node in all_nodes:
             node_idx = dictionary[node.get_name()]
             if not isinstance(node, FusedSchedulerNode):
                 weight = node.outputs[0].mpi_buffer.size_alloc
-                successor_set = node.outputs[0].mpi_buffer.succ_nodes 
+                successor_set = node.outputs[0].mpi_buffer.succ_nodes
                 for succ in successor_set:
                     succ_idx = dictionary[succ.get_name()]
                     graph[node_idx].append((succ_idx, weight))
                     graph[succ_idx].append((node_idx, weight))
-                    #print(succ.get_name())
-            else: #fused
+                    # print(succ.get_name())
+            else:  # fused
                 sub_nodes = node.get_nodes()
                 for sub_node in sub_nodes:
-                    successor_set = sub_node.outputs[0].mpi_buffer.succ_nodes 
+                    successor_set = sub_node.outputs[0].mpi_buffer.succ_nodes
                     for succ in successor_set:
                         succ_idx = dictionary[succ.get_name()]
                         graph[node_idx].append((succ_idx, weight))
                         graph[succ_idx].append((node_idx, weight))
-                        
 
         print(graph)
         print("METIS METIS")
         metis_graph = metis.adjlist_to_metis(graph)
         k = 5
         part = metis.part_graph(metis_graph, k, contig=True)
-        #print(part)
+        # print(part)
 
         part_assignments = part[1]
 
-        partitions: list[PartitionType] = [[] for i in range(k)] 
-        #cur_partition: PartitionType = []
-        for i, part_num in enumerate(part_assignments):
-            partitions[part_num].append(all_nodes[i])
+        partitions: list[PartitionType] = [[] for i in range(k)]
 
-        #skip_cudagraphs = [True for i in range(len(all_nodes))]
+        # TODO: fix this algorithm
+
+        for i, part_num in enumerate(part_assignments):
+            if i == 0 or part_num != part_assignments[i - 1]:
+                partitions.append([all_nodes[i]])
+            else:
+                partitions[-1].append(all_nodes[i])
+            # partitions[part_num].append(all_nodes[i])
+
+        # skip_cudagraphs = [True for i in range(len(all_nodes))]
 
         partitions = [p for p in partitions if len(p) > 0]
 
-        skip_cudagraphs = [True]*len(partitions)
+        skip_cudagraphs = [True] * len(partitions)
 
         print(partitions)
         print(skip_cudagraphs)
 
-        #print(partitions)
+        # print(partitions)
 
-        # new_partition : list[PartitionType] = [] 
+        # new_partition : list[PartitionType] = []
         # part1 = []
         # part2 = []
         # for i, node in enumerate(all_nodes[:len(all_nodes)//2]):
@@ -4289,7 +4293,7 @@ class Scheduler:
         # one_partition : list[PartitionType] = []
         # one_part = []
         # for i, node in enumerate(all_nodes):
-        #     one_part.append(node) 
+        #     one_part.append(node)
         # one_partition.append(one_part)
 
         # skip_cudagraphs = [True,True]
@@ -4305,7 +4309,6 @@ class Scheduler:
         # print("our sigs",signatures)
         # self.compute_graph_partition_maps(signatures)
         breakpoint()
-        
 
         # #THEIR CODE
         # partitions: list[PartitionType] = []
