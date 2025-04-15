@@ -595,7 +595,6 @@ def reorder_for_peak_memory(
     Try a few heuristics based topological sort algorithms, and pick the one whose
     resulting topological order has the lowest peak memory estimation.
     """
-    breakpoint()
 
     torch_log.info("Reordering for peak memory -- %d nodes", len(nodes))
 
@@ -669,7 +668,6 @@ def reorder_for_peak_memory(
     graph_outputs: OrderedSet[str],
     _methods=None,
 ) -> list[BaseSchedulerNode]:
-    breakpoint()
 
     name_to_freeable_input_buf: dict[str, FreeableInputBuffer] = get_freeable_input_buf(
         nodes, graph_inputs
@@ -848,7 +846,7 @@ def ilp_peak_mem(
             problem += buffer_stored_vars[buffer][step] == 0
 
     SOLVER_KIND = "PULP_CBC_CMD"
-    solver = pulp.getSolver(SOLVER_KIND)
+    solver = pulp.getSolver(SOLVER_KIND, msg=False)
     status = problem.solve(solver)
     assert status == 1
 
