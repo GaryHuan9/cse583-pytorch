@@ -4254,22 +4254,16 @@ class Scheduler:
         metis_graph = metis.adjlist_to_metis(graph)
         k = 5
         part = metis.part_graph(metis_graph, k, contig=True)
-        # print(part)
 
         part_assignments = part[1]
 
         partitions: list[PartitionType] = [[] for i in range(k)]
-
-        # TODO: fix this algorithm
 
         for i, part_num in enumerate(part_assignments):
             if i == 0 or part_num != part_assignments[i - 1]:
                 partitions.append([all_nodes[i]])
             else:
                 partitions[-1].append(all_nodes[i])
-            # partitions[part_num].append(all_nodes[i])
-
-        # skip_cudagraphs = [True for i in range(len(all_nodes))]
 
         partitions = [p for p in partitions if len(p) > 0]
 
@@ -4278,41 +4272,11 @@ class Scheduler:
         print(partitions)
         print(skip_cudagraphs)
 
-        # print(partitions)
-
-        # new_partition : list[PartitionType] = []
-        # part1 = []
-        # part2 = []
-        # for i, node in enumerate(all_nodes[:len(all_nodes)//2]):
-        #     part1.append(node)
-        # for i, node in enumerate(all_nodes[len(all_nodes)//2:]):
-        #     part2.append(node)
-        # new_partition.append(part1)
-        # new_partition.append(part2)
-
-        # one_partition : list[PartitionType] = []
-        # one_part = []
-        # for i, node in enumerate(all_nodes):
-        #     one_part.append(node)
-        # one_partition.append(one_part)
-
-        # skip_cudagraphs = [True,True]
-
-        # print("OUR ONE PARTITION")
-        # print(one_partition)
-        # print(skip_cudagraphs)
-
         our_signatures = self.get_graph_partition_signature(
             partitions=partitions, skip_cudagraphs=skip_cudagraphs
         )
 
-        # print("our sigs",signatures)
-        # self.compute_graph_partition_maps(signatures)
-        breakpoint()
-
-        # #THEIR CODE
-        # partitions: list[PartitionType] = []
-
+        # Old method
         # skip_cudagraph = True
         # cur_partition: PartitionType = []
         # skip_cudagraphs = []
@@ -4334,14 +4298,6 @@ class Scheduler:
         #     partitions=partitions, skip_cudagraphs=skip_cudagraphs
         # )
         # self.compute_graph_partition_maps(signatures)
-        # # print("Their sigs:",signatures)
-
-        # print("THEIR PARTITION")
-        # print(partitions)
-        # print(skip_cudagraphs)
-
-        # print("Difference between partitions",one_partition == partitions)
-        # print("DIFFERENCE BETWEEN TWO:",our_signatures == signatures)
 
         return partitions, our_signatures
 
