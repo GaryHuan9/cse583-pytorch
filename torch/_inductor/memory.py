@@ -585,6 +585,7 @@ def ilp_peak_mem(
     op_output_buffers: dict[str, set[str]],
     op_ancestors: dict[str, set[str]],
     input_buffers: set[str],
+    output_buffers: set[str],
 ) -> tuple[dict[str, int], int]:
     """Returns a mapping of timesteps each operator is schedued at and the peak memory usage"""
     import pulp
@@ -673,6 +674,11 @@ def ilp_peak_mem(
                 <= mem
             )
 
+    # extra constraint
+    # ensure all graph outputs are live at the final step
+    for buffer in output_buffers:
+        problem += buffer_stored_vars[buffer][-1] == 1
+
     # optimization constraints 7 and 8
     # operator must be executed after all its ancestors
     # buffer cannot be stored in memory until all its producers' ancestors have been executed
@@ -693,19 +699,20 @@ def ilp_peak_mem(
         for step in range(num_steps - num_descendents, num_steps):
             problem += op_schedule_vars[op][step] == 0
 
-    # optimization constraint 10
-    # buffer can be removed once all its users have been executed
-    for buffer in all_buffers:
-        uses = (op for op in all_ops if buffer in op_input_buffers[op])
-        num_descendents = [
-            sum(1 for ancestor in op_ancestors if op in ancestor) for op in uses
-        ]
-        max_descendents = max(num_descendents + [0])
-        for step in range(num_steps - max_descendents, num_steps):
-            problem += buffer_stored_vars[buffer][step] == 0
+    # optimization removed since it conflicts with the extra constraint
+    # # optimization constraint 10
+    # # buffer can be removed once all its users have been executed
+    # for buffer in all_buffers:
+    #     uses = (op for op in all_ops if buffer in op_input_buffers[op])
+    #     num_descendents = [
+    #         sum(1 for ancestor in op_ancestors if op in ancestor) for op in uses
+    #     ]
+    #     max_descendents = max(num_descendents + [0])
+    #     for step in range(num_steps - max_descendents, num_steps):
+    #         problem += buffer_stored_vars[buffer][step] == 0
 
     SOLVER_KIND = "PULP_CBC_CMD"
-    solver = pulp.getSolver(SOLVER_KIND, msg=False)
+    solver = pulp.getSolver(SOLVER_KIND, msg=True)
     status = problem.solve(solver)
     assert status == 1
 
@@ -728,7 +735,9 @@ def ilp_sort(
     name_to_freeable_input_buf: dict[str, FreeableInputBuffer],
     name_to_fused_node: dict[str, BaseSchedulerNode],
     graph_inputs: OrderedSet[str],
+    graph_outputs: OrderedSet[str],
 ) -> list[BaseSchedulerNode]:
+    print(f"num_nodes={len(nodes)}")
     buffer_sizes = {
         name: buf.mpi_buffer.size_free
         for node in nodes
@@ -754,6 +763,7 @@ def ilp_sort(
     }
 
     input_buffers = {buf for buf in graph_inputs if buf in buffer_sizes}
+    output_buffers = {buf for buf in graph_outputs if buf in buffer_sizes}
 
     order, _mem = ilp_peak_mem(
         buffer_sizes,
@@ -762,7 +772,9 @@ def ilp_sort(
         op_output_buffers,
         op_ancestors,
         input_buffers,
+        output_buffers,
     )
+    print(_mem)
 
     sorted_nodes = sorted(nodes, key=lambda node: order[node.get_name()])
     return sorted_nodes
@@ -825,7 +837,11 @@ def reorder_for_peak_memory(
                 )
             elif method == ilp_sort:
                 order = method(
-                    nodes, name_to_freeable_input_buf, name_to_fused_node, graph_inputs
+                    nodes,
+                    name_to_freeable_input_buf,
+                    name_to_fused_node,
+                    graph_inputs,
+                    graph_outputs,
                 )
             else:
                 order = method(nodes)
@@ -840,6 +856,7 @@ def reorder_for_peak_memory(
         except Exception as e:
             torch_log.error("Failed to reorder for %s: %s", method.__name__, e)
 
+    print([(res.peak_memory, res.method) for res in peak_memory_diff_methods])
     signpost_event(
         category="inductor",
         name="memory",
