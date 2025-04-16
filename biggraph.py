@@ -9,6 +9,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+torch.compiler.reset()
+
 
 class Branch(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim):

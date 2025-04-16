@@ -1,4 +1,5 @@
 from __future__ import annotations
+import metis
 
 import collections
 import dataclasses
@@ -16,7 +17,7 @@ from .virtualized import V
 
 if TYPE_CHECKING:
     from .dependencies import Dep
-    from .scheduler import BaseSchedulerNode, SchedulerBuffer
+    from .scheduler import BaseSchedulerNode, FusedSchedulerNode, SchedulerBuffer
 
 
 torch_log = logging.getLogger(__name__)
@@ -578,6 +579,75 @@ def topological_sort_dfs(nodes: list[BaseSchedulerNode]) -> list[BaseSchedulerNo
     return result
 
 
+def graph_partition(
+    nodes: list[BaseSchedulerNode],
+) -> tuple[list[PartitionType], list[GraphPartitionSignature]]:
+    """
+    Given a list of BaseSchedulerNodes, split into a list of
+    graph partitions and compute partition input/output signatures.
+    """
+
+    print("GRAPH PARTITIONING")
+    from .scheduler import FusedSchedulerNode
+
+    # print("your code now uh ")
+    # breakpoint()
+
+    all_nodes = nodes
+    graph = [[] for i in range(len(all_nodes))]
+
+    dictionary = {}
+    for i, node in enumerate(all_nodes):
+        dictionary[node.get_name()] = i
+        # graph.append([])
+
+    # self.nodes[0].outputs[0].mpi_buffer.size_alloc
+    for node in all_nodes:
+        # breakpoint()
+        node_idx = dictionary[node.get_name()]
+        if not isinstance(node, FusedSchedulerNode):
+            weight = node.outputs[0].mpi_buffer.size_alloc
+            successor_set = node.outputs[0].mpi_buffer.succ_nodes
+            for succ in successor_set:
+                succ_idx = dictionary[succ.get_name()]
+                graph[node_idx].append((succ_idx, weight))
+                graph[succ_idx].append((node_idx, weight))
+                # print(succ.get_name())
+        else:  # fused
+            sub_nodes = node.get_nodes()
+            for sub_node in sub_nodes:
+                successor_set = sub_node.outputs[0].mpi_buffer.succ_nodes
+                for succ in successor_set:
+                    succ_idx = dictionary[succ.get_name()]
+                    graph[node_idx].append((succ_idx, weight))
+                    graph[succ_idx].append((node_idx, weight))
+
+    print(graph)
+    print("METIS METIS")
+    metis_graph = metis.adjlist_to_metis(graph)
+    k = 5
+    part = metis.part_graph(metis_graph, k, contig=True)
+
+    part_assignments = part[1]
+
+    partitions: list = [[] for i in range(k)]
+
+    for i, part_num in enumerate(part_assignments):
+        if i == 0 or part_num != part_assignments[i - 1]:
+            partitions.append([all_nodes[i]])
+        else:
+            partitions[-1].append(all_nodes[i])
+
+    partitions = [p for p in partitions if len(p) > 0]
+
+    skip_cudagraphs = [True] * len(partitions)
+
+    print(partitions)
+    print(skip_cudagraphs)
+
+    return partitions
+
+
 def reorder_for_peak_memory(
     nodes: list[BaseSchedulerNode],
     name_to_buf: dict[str, SchedulerBuffer],
@@ -594,6 +664,8 @@ def reorder_for_peak_memory(
     Try a few heuristics based topological sort algorithms, and pick the one whose
     resulting topological order has the lowest peak memory estimation.
     """
+
+    print("RUNNING REORDERING for PEAK MEMORY")
 
     torch_log.info("Reordering for peak memory -- %d nodes", len(nodes))
 
@@ -613,10 +685,29 @@ def reorder_for_peak_memory(
         nodes, name_to_fused_node, name_to_buf, name_to_freeable_input_buf
     )
 
+    partitions = graph_partition(nodes)
+    print(partitions)
+
+    breakpoint()
+
     # keep track of the peak memory estimates of different methods
     peak_memory_diff_methods: list[PeakMemoryResult] = []
 
     # the default
+    mem_usage = []
+
+    # TODO: get this loop running with edited mpi buffers, then call methods on each part, recombine and fix the data
+    for part in partitions:
+        assign_memory_planning_info_for_scheduler_buffers(nodes, name_to_buf)
+        part_freeable_input_buf = get_freeable_input_buf(part, graph_inputs)
+        part_peak_memory, _ = estimate_peak_memory(
+            part, part_freeable_input_buf, graph_outputs
+        )
+        mem_usage.append(part_peak_memory)
+
+    highest_mem_index = mem_usage.index(max(mem_usage))
+    breakpoint()
+
     estimated_peak_memory, _ = estimate_peak_memory(
         nodes, name_to_freeable_input_buf, graph_outputs
     )

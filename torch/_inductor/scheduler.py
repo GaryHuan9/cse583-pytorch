@@ -2043,6 +2043,12 @@ class Scheduler:
         # other reordering passes could undo their effects.
         if config.reorder_for_peak_memory:
             from .memory import reorder_for_peak_memory
+            print("call site of reorder_for_peak_memory")
+            # partition here
+
+            breakpoint()
+            # parts, sigs = self.graph_partition()
+            print("partitions in graph partitions")
 
             self.nodes = reorder_for_peak_memory(
                 self.nodes,
@@ -4218,8 +4224,10 @@ class Scheduler:
         graph partitions and compute partition input/output signatures.
         """
 
-        print("your code now uh ")
-        breakpoint()
+        print("GRAPH PARTITIONING")
+
+        # print("your code now uh ")
+        # breakpoint()
 
         all_nodes = self.nodes
         graph = [[] for i in range(len(all_nodes))]
