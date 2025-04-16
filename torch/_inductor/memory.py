@@ -4,7 +4,6 @@ import collections
 import dataclasses
 import heapq
 import logging
-import numpy as np
 from typing import Callable, TYPE_CHECKING, TypedDict, Union
 
 from torch._utils_internal import signpost_event
@@ -633,6 +632,10 @@ def reorder_for_peak_memory(
                 order = method(
                     nodes, name_to_freeable_input_buf, name_to_buf, graph_outputs
                 )
+            elif method == ilp_sort:
+                order = method(
+                    nodes, name_to_freeable_input_buf, name_to_fused_node, graph_inputs
+                )
             else:
                 order = method(nodes)
             assert len(order) == len(nodes)
@@ -660,23 +663,12 @@ def reorder_for_peak_memory(
     return best_result.order
 
 
-def reorder_for_peak_memory(
+def ilp_sort(
     nodes: list[BaseSchedulerNode],
-    name_to_buf: dict[str, SchedulerBuffer],
+    name_to_freeable_input_buf: dict[str, FreeableInputBuffer],
     name_to_fused_node: dict[str, BaseSchedulerNode],
     graph_inputs: OrderedSet[str],
-    graph_outputs: OrderedSet[str],
-    _methods=None,
 ) -> list[BaseSchedulerNode]:
-
-    name_to_freeable_input_buf: dict[str, FreeableInputBuffer] = get_freeable_input_buf(
-        nodes, graph_inputs
-    )
-    assign_memory_planning_info_for_scheduler_buffers(nodes, name_to_buf)
-    assign_memory_planning_info_for_scheduler_nodes(
-        nodes, name_to_fused_node, name_to_buf, name_to_freeable_input_buf
-    )
-
     buffer_sizes = {
         name: buf.mpi_buffer.size_free
         for node in nodes
@@ -700,11 +692,10 @@ def reorder_for_peak_memory(
         }
         for op in nodes
     }
-    breakpoint()
 
     input_buffers = {buf for buf in graph_inputs if buf in buffer_sizes}
 
-    order, mem = ilp_peak_mem(
+    order, _mem = ilp_peak_mem(
         buffer_sizes,
         op_extra_sizes,
         op_input_buffers,
@@ -713,10 +704,8 @@ def reorder_for_peak_memory(
         input_buffers,
     )
 
-    breakpoint()
-    nodes.sort(key=lambda node: order[node.get_name()])
-
-    return nodes
+    sorted_nodes = sorted(nodes, key=lambda node: order[node.get_name()])
+    return sorted_nodes
 
 
 def ilp_peak_mem(
