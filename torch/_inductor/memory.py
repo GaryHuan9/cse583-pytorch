@@ -774,7 +774,7 @@ def ilp_sort(
         input_buffers,
         output_buffers,
     )
-    print(_mem)
+    print("ilp_peak_mem:", _mem)
 
     sorted_nodes = sorted(nodes, key=lambda node: order[node.get_name()])
     return sorted_nodes
