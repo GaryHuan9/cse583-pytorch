@@ -4,7 +4,7 @@ import collections
 import dataclasses
 import heapq
 import logging
-from typing import Callable, TYPE_CHECKING, TypedDict, Union
+from typing import TYPE_CHECKING, Callable, TypedDict, Union
 
 from torch._utils_internal import signpost_event
 from torch.utils._ordered_set import OrderedSet
@@ -650,11 +650,10 @@ def ilp_peak_mem(
     # a buffer is stored at time t if it was produced or stored at time t - 1
     for buffer in all_buffers:
         for step in range(1, num_steps):
-            problem += (
-                buffer_stored_vars[buffer][step]
-                <= buffer_stored_vars[buffer][step - 1]
-                + op_schedule_vars[buffer_producers[buffer]][step]
-            )
+            can_be_stored = buffer_stored_vars[buffer][step - 1]
+            if buffer in buffer_producers:
+                can_be_stored += op_schedule_vars[buffer_producers[buffer]][step]
+            problem += buffer_stored_vars[buffer][step] <= can_be_stored
 
     # constraint 5
     # non-input buffers are not stored at step 0
@@ -699,10 +698,12 @@ def ilp_peak_mem(
         for step in range(num_steps - num_descendents, num_steps):
             problem += op_schedule_vars[op][step] == 0
 
-    # optimization removed since it conflicts with the extra constraint
     # # optimization constraint 10
     # # buffer can be removed once all its users have been executed
     # for buffer in all_buffers:
+    #     if buffer in output_buffers:
+    #         # buffer cannot be removed
+    #         continue
     #     uses = (op for op in all_ops if buffer in op_input_buffers[op])
     #     num_descendents = [
     #         sum(1 for ancestor in op_ancestors if op in ancestor) for op in uses
@@ -711,7 +712,7 @@ def ilp_peak_mem(
     #     for step in range(num_steps - max_descendents, num_steps):
     #         problem += buffer_stored_vars[buffer][step] == 0
 
-    SOLVER_KIND = "PULP_CBC_CMD"
+    SOLVER_KIND = "SCIP_CMD"
     solver = pulp.getSolver(SOLVER_KIND, msg=True)
     status = problem.solve(solver)
     assert status == 1
@@ -828,8 +829,18 @@ def reorder_for_peak_memory(
     )
     torch_log.info("Baseline peak memory: %d", estimated_peak_memory)
 
+    return ilp_sort(
+        nodes,
+        name_to_freeable_input_buf,
+        name_to_fused_node,
+        graph_inputs,
+        graph_outputs,
+    )
     # other methods
     ilp_result = None
+    print([method.__name__ for method in methods])
+    if ilp_sort not in methods:
+        methods.append(ilp_sort)
     for method in methods:
         try:
             if method == topological_sort_lpmf:
