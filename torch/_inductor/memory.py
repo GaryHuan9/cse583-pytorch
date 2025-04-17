@@ -828,6 +828,14 @@ def reorder_for_peak_memory(
     )
     torch_log.info("Baseline peak memory: %d", estimated_peak_memory)
 
+    order = ilp_sort(
+        nodes,
+        name_to_freeable_input_buf,
+        name_to_fused_node,
+        graph_inputs,
+        graph_outputs,
+    )
+    return order
     # other methods
     ilp_result = None
     for method in methods:
