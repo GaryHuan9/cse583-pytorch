@@ -2030,11 +2030,6 @@ class Scheduler:
         self.logged_slow_fusion = OrderedSet[tuple[str, str]]()
         if config._pre_fusion_custom_pass is not None:
             self.nodes = config._pre_fusion_custom_pass(self.nodes)
-        self.nodes = self.fuse_nodes(self.nodes)
-        self.merge_loops()
-        self.finalize_multi_template_buffers()
-        if config.combo_kernels:
-            self.create_combo_kernel_nodes(num_ck_nodes=None)
 
         # Peak memory pass and overlap pass must run last, otherwise
         # other reordering passes could undo their effects.
@@ -2050,6 +2045,14 @@ class Scheduler:
             )
         if config.reorder_for_compute_comm_overlap:
             self.nodes = comms.reorder_compute_and_comm_for_overlap(self.nodes)
+
+        self.nodes = self.fuse_nodes(self.nodes)
+        self.merge_loops()
+        self.finalize_multi_template_buffers()
+        if config.combo_kernels:
+            self.create_combo_kernel_nodes(num_ck_nodes=None)
+
+
         self.process_grouped_nodes()
         self.compute_last_usage()
         log_ir_post_fusion(self.nodes)
