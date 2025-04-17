@@ -698,6 +698,7 @@ def ilp_peak_mem(
         for step in range(num_steps - num_descendents, num_steps):
             problem += op_schedule_vars[op][step] == 0
 
+    # seems to make solving slower
     # # optimization constraint 10
     # # buffer can be removed once all its users have been executed
     # for buffer in all_buffers:
@@ -829,16 +830,8 @@ def reorder_for_peak_memory(
     )
     torch_log.info("Baseline peak memory: %d", estimated_peak_memory)
 
-    return ilp_sort(
-        nodes,
-        name_to_freeable_input_buf,
-        name_to_fused_node,
-        graph_inputs,
-        graph_outputs,
-    )
     # other methods
     ilp_result = None
-    print([method.__name__ for method in methods])
     if ilp_sort not in methods:
         methods.append(ilp_sort)
     for method in methods:
