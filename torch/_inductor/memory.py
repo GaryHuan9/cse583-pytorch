@@ -844,7 +844,6 @@ def reorder_for_peak_memory(
                     graph_inputs,
                     graph_outputs,
                 )
-                ilp_result = order
             else:
                 order = method(nodes)
             assert len(order) == len(nodes)
@@ -854,6 +853,8 @@ def reorder_for_peak_memory(
             peak_memory_diff_methods.append(
                 PeakMemoryResult(order, peak_memory, method.__name__)
             )
+            if method == ilp_sort:
+                ilp_result = peak_memory_diff_methods[-1]
             torch_log.info("%s peak memory: %d", method.__name__, peak_memory)
         except Exception as e:
             torch_log.error("Failed to reorder for %s: %s", method.__name__, e)
