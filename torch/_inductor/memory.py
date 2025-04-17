@@ -828,14 +828,6 @@ def reorder_for_peak_memory(
     )
     torch_log.info("Baseline peak memory: %d", estimated_peak_memory)
 
-    order = ilp_sort(
-        nodes,
-        name_to_freeable_input_buf,
-        name_to_fused_node,
-        graph_inputs,
-        graph_outputs,
-    )
-    return order
     # other methods
     ilp_result = None
     for method in methods:
@@ -878,9 +870,9 @@ def reorder_for_peak_memory(
 
     # get the optimal one
     best_result = min(peak_memory_diff_methods, key=lambda x: x.peak_memory)
-    print("best result method (method it would have selected):", best_result.method)
-    print("choosing ilp_sort anyways")
-    assert ilp_result is not None
-    best_result = ilp_result
-
+    print("best result method:", best_result.method)
+    if ilp_result is not None:
+        print("choosing ilp_sort anyways")
+        return ilp_result.order
+    print("ilp_sort never ran, using", best_result.method)
     return best_result.order
