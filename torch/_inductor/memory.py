@@ -829,6 +829,7 @@ def reorder_for_peak_memory(
     torch_log.info("Baseline peak memory: %d", estimated_peak_memory)
 
     # other methods
+    ilp_result = None
     for method in methods:
         try:
             if method == topological_sort_lpmf:
@@ -843,6 +844,7 @@ def reorder_for_peak_memory(
                     graph_inputs,
                     graph_outputs,
                 )
+                ilp_result = order
             else:
                 order = method(nodes)
             assert len(order) == len(nodes)
@@ -867,5 +869,9 @@ def reorder_for_peak_memory(
 
     # get the optimal one
     best_result = min(peak_memory_diff_methods, key=lambda x: x.peak_memory)
+    print("best result method (method it would have selected):", best_result.method)
+    print("choosing ilp_sort anyways")
+    assert ilp_result is not None
+    best_result = ilp_result
 
     return best_result.order
