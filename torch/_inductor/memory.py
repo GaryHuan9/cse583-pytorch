@@ -685,29 +685,8 @@ def reorder_for_peak_memory(
         nodes, name_to_fused_node, name_to_buf, name_to_freeable_input_buf
     )
 
-    partitions = graph_partition(nodes)
-    print(partitions)
-
-    breakpoint()
-
-    # keep track of the peak memory estimates of different methods
+    # old code, maintaining  baseline
     peak_memory_diff_methods: list[PeakMemoryResult] = []
-
-    # the default
-    mem_usage = []
-
-    # TODO: get this loop running with edited mpi buffers, then call methods on each part, recombine and fix the data
-    for part in partitions:
-        assign_memory_planning_info_for_scheduler_buffers(nodes, name_to_buf)
-        part_freeable_input_buf = get_freeable_input_buf(part, graph_inputs)
-        part_peak_memory, _ = estimate_peak_memory(
-            part, part_freeable_input_buf, graph_outputs
-        )
-        mem_usage.append(part_peak_memory)
-
-    highest_mem_index = mem_usage.index(max(mem_usage))
-    breakpoint()
-
     estimated_peak_memory, _ = estimate_peak_memory(
         nodes, name_to_freeable_input_buf, graph_outputs
     )
@@ -716,25 +695,79 @@ def reorder_for_peak_memory(
     )
     torch_log.info("Baseline peak memory: %d", estimated_peak_memory)
 
-    # other methods
+    partitions = graph_partition(nodes)
+    print(partitions)
+
+    breakpoint()
+    # the default
+    mem_usage = []
+    part_freeable_input_bufs = []
+
+    for part in partitions:
+        assign_memory_planning_info_for_scheduler_buffers(part, name_to_buf)
+        part_freeable_input_buf = get_freeable_input_buf(part, graph_inputs)
+        part_freeable_input_bufs.append(part_freeable_input_buf)
+
+        part_peak_memory, _ = estimate_peak_memory(
+            part, part_freeable_input_buf, graph_outputs
+        )
+        mem_usage.append(part_peak_memory)
+
+    highest_mem_index = mem_usage.index(max(mem_usage))
+    breakpoint()
+
+    #  call methods upon the particular parts
     for method in methods:
-        try:
-            if method == topological_sort_lpmf:
-                order = method(
-                    nodes, name_to_freeable_input_buf, name_to_buf, graph_outputs
+        orders = []
+        overall_peak_mem = 0
+        for i, part in enumerate(partitions):
+            try:
+                if method == topological_sort_lpmf:
+                    order = method(
+                        part, part_freeable_input_bufs[i], name_to_buf, graph_outputs
+                    )
+                else:
+                    order = method(part)
+                assert len(part) == len(part)
+                peak_memory, _ = estimate_peak_memory(
+                    order, part_freeable_input_bufs[i], graph_outputs
                 )
-            else:
-                order = method(nodes)
-            assert len(order) == len(nodes)
-            peak_memory, _ = estimate_peak_memory(
-                order, name_to_freeable_input_buf, graph_outputs
-            )
-            peak_memory_diff_methods.append(
-                PeakMemoryResult(order, peak_memory, method.__name__)
-            )
-            torch_log.info("%s peak memory: %d", method.__name__, peak_memory)
-        except Exception as e:
-            torch_log.error("Failed to reorder for %s: %s", method.__name__, e)
+                overall_peak_mem = max(overall_peak_mem, peak_memory)
+
+                orders.append(order)
+
+            except Exception as e:
+                torch_log.error("Failed to reorder for %s: %s", method.__name__, e)
+
+            # fix nodes to be back all together
+        all_nodes = []
+        for i, part in enumerate(partitions):
+            all_nodes.extend(orders[i])
+
+        peak_memory_diff_methods.append(
+            PeakMemoryResult(order, peak_memory, method.__name__)
+        )
+        torch_log.info("%s peak memory: %d", method.__name__, peak_memory)
+
+    # old methods
+    # for method in methods:
+    #     try:
+    #         if method == topological_sort_lpmf:
+    #             order = method(
+    #                 nodes, name_to_freeable_input_buf, name_to_buf, graph_outputs
+    #             )
+    #         else:
+    #             order = method(nodes)
+    #         assert len(order) == len(nodes)
+    #         peak_memory, _ = estimate_peak_memory(
+    #             order, name_to_freeable_input_buf, graph_outputs
+    #         )
+    #         peak_memory_diff_methods.append(
+    #             PeakMemoryResult(order, peak_memory, method.__name__)
+    #         )
+    #         torch_log.info("%s peak memory: %d", method.__name__, peak_memory)
+    #     except Exception as e:
+    #         torch_log.error("Failed to reorder for %s: %s", method.__name__, e)
 
     signpost_event(
         category="inductor",
