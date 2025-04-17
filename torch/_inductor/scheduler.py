@@ -848,7 +848,7 @@ class BaseSchedulerNode:
 
         prologue = nodes[:template_index]
         template_node = nodes[template_index]
-        epilogue = nodes[template_index + 1 :]
+        epilogue = nodes[template_index + 1:]
         return prologue, template_node, epilogue
 
 
@@ -1744,7 +1744,7 @@ class ForeachKernelSchedulerNode(FusedSchedulerNode):
         for nodes in sorted_nodes:
             grouped_nodes.extend(
                 [
-                    nodes[i : i + max_num_nodes]
+                    nodes[i: i + max_num_nodes]
                     for i in range(0, len(nodes), max_num_nodes)
                 ]
             )
@@ -2031,6 +2031,12 @@ class Scheduler:
         if config._pre_fusion_custom_pass is not None:
             self.nodes = config._pre_fusion_custom_pass(self.nodes)
 
+        self.nodes = self.fuse_nodes(self.nodes)
+        self.merge_loops()
+        self.finalize_multi_template_buffers()
+        if config.combo_kernels:
+            self.create_combo_kernel_nodes(num_ck_nodes=None)
+
         # Peak memory pass and overlap pass must run last, otherwise
         # other reordering passes could undo their effects.
         if config.reorder_for_peak_memory:
@@ -2045,13 +2051,6 @@ class Scheduler:
             )
         if config.reorder_for_compute_comm_overlap:
             self.nodes = comms.reorder_compute_and_comm_for_overlap(self.nodes)
-
-        self.nodes = self.fuse_nodes(self.nodes)
-        self.merge_loops()
-        self.finalize_multi_template_buffers()
-        if config.combo_kernels:
-            self.create_combo_kernel_nodes(num_ck_nodes=None)
-
 
         self.process_grouped_nodes()
         self.compute_last_usage()
@@ -3119,7 +3118,7 @@ class Scheduler:
 
         def check_all_pairs(nodes: list[BaseSchedulerNode]) -> None:
             for node1_index, node1 in enumerate(nodes):
-                for node2 in nodes[node1_index + 1 :]:
+                for node2 in nodes[node1_index + 1:]:
                     key = (node1, node2)
                     if key in seen:
                         continue
