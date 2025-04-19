@@ -1,0 +1,2 @@
+dev,name,batch_size,accuracy
+cpu,dmucs,0,eager_fail_to_run
