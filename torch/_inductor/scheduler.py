@@ -1146,7 +1146,7 @@ class SchedulerNode(BaseSchedulerNode):
 
     def run(self, *index_vars: Sequence[sympy.Expr]) -> None:
         print("we're running")
-        breakpoint()
+        # breakpoint()
         self.decide_inplace_update()
         self.mark_run()
         self.codegen(index_vars)
@@ -2047,7 +2047,7 @@ class Scheduler:
             print("call site of reorder_for_peak_memory")
             # partition here
 
-            breakpoint()
+            # breakpoint()
             # parts, sigs = self.graph_partition()
             print("partitions in graph partitions")
 
@@ -4352,7 +4352,7 @@ class Scheduler:
         This allows further applying different optimizations (e.g., cudagraph) to
         each function.
         """
-        breakpoint()
+        # breakpoint()
         print("we graph partition")
         partitions, signatures = self.graph_partition()
 
