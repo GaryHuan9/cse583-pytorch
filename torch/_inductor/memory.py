@@ -596,20 +596,24 @@ def graph_partition(
     all_nodes = nodes
     graph = [[] for i in range(len(all_nodes))]
 
-    dictionary = {}
+    node_name_to_index = {}
     for i, node in enumerate(all_nodes):
-        dictionary[node.get_name()] = i
+        node_name_to_index[node.get_name()] = i
         # graph.append([])
+
+    node_name_to_node = {}
+    for node in all_nodes:
+        node_name_to_node[node.get_name()] = node
 
     # self.nodes[0].outputs[0].mpi_buffer.size_alloc
     for node in all_nodes:
         # breakpoint()
-        node_idx = dictionary[node.get_name()]
+        node_idx = node_name_to_index[node.get_name()]
         if not isinstance(node, FusedSchedulerNode):
             weight = node.outputs[0].mpi_buffer.size_alloc
             successor_set = node.outputs[0].mpi_buffer.succ_nodes
             for succ in successor_set:
-                succ_idx = dictionary[succ.get_name()]
+                succ_idx = node_name_to_index[succ.get_name()]
                 graph[node_idx].append((succ_idx, weight))
                 graph[succ_idx].append((node_idx, weight))
                 # print(succ.get_name())
@@ -618,11 +622,12 @@ def graph_partition(
             for sub_node in sub_nodes:
                 successor_set = sub_node.outputs[0].mpi_buffer.succ_nodes
                 for succ in successor_set:
-                    succ_idx = dictionary[succ.get_name()]
+                    succ_idx = node_name_to_index[succ.get_name()]
                     graph[node_idx].append((succ_idx, weight))
                     graph[succ_idx].append((node_idx, weight))
 
     print(graph)
+    breakpoint()
     print("METIS METIS")
     metis_graph = metis.adjlist_to_metis(graph)
     k = 5
@@ -630,8 +635,9 @@ def graph_partition(
 
     part_assignments = part[1]
 
-    partitions: list = [[] for i in range(k)]
+    partitions: list = []
 
+    # for each partition, add the inputs and outputs
     for i, part_num in enumerate(part_assignments):
         if i == 0 or part_num != part_assignments[i - 1]:
             partitions.append([all_nodes[i]])
@@ -640,12 +646,250 @@ def graph_partition(
 
     partitions = [p for p in partitions if len(p) > 0]
 
+    node_name_to_part = {}
+    for i, part in enumerate(partitions):
+        for node in part:
+            node_name_to_part[node.get_name()] = i
+
+    part_inputs_outputs = []
+
+    # a buffer is an input, if its producer is outside the partition
+    # a buffer is an output, if any of its consumers is outside the partition
+    for part in partitions:
+        inputs = []
+        outputs = []
+        for node in part:
+            for anc_name in node.ancestors:
+                is_imm_pred = False
+                anc = node_name_to_node[anc_name]
+                for anc_succ in anc.outputs[0].mpi_buffer.succ_nodes:
+                    if (anc_succ.get_name() == node.get_name()):
+                        is_imm_pred = True
+
+                # found an immediate ancestor, add it's output buffer as an input to our partition
+                if is_imm_pred and node_name_to_part[anc.get_name()] != node_name_to_part[node.get_name()]:
+                    input_buf_name = anc.outputs[0].get_name()
+                    if input_buf_name not in inputs:
+                        inputs.append(input_buf_name)
+
+            for succ in node.outputs[0].mpi_buffer.succ_nodes:
+                if node_name_to_part[succ.get_name()] != node_name_to_part[node.get_name()]:
+                    output_buf_name = node.outputs[0].get_name()
+                    if output_buf_name not in outputs:
+                        outputs.append(output_buf_name)
+        part_inputs_outputs.append((inputs, outputs))
+
     skip_cudagraphs = [True] * len(partitions)
 
+    print("PARTITIONS")
     print(partitions)
+    print("PARTITIONS_IO")
+    print(part_inputs_outputs)
     print(skip_cudagraphs)
 
     return partitions
+
+
+def ilp_peak_mem(
+    buffer_sizes: dict[str, int],
+    op_extra_sizes: dict[str, int],
+    op_input_buffers: dict[str, set[str]],
+    op_output_buffers: dict[str, set[str]],
+    op_ancestors: dict[str, set[str]],
+    input_buffers: set[str],
+    output_buffers: set[str],
+) -> tuple[dict[str, int], int]:
+    """Returns a mapping of timesteps each operator is schedued at and the peak memory usage"""
+    import pulp
+
+    all_ops = op_extra_sizes.keys()
+    assert op_extra_sizes.keys() == op_input_buffers.keys()
+    assert op_extra_sizes.keys() == op_output_buffers.keys()
+    num_ops = len(op_extra_sizes)
+    num_steps = num_ops + 1
+    assert len(op_input_buffers) == num_ops
+
+    all_buffers = buffer_sizes.keys()
+    assert input_buffers.issubset(all_buffers)
+    assert all(inputs.issubset(all_buffers) for inputs in op_input_buffers.values())
+
+    buffer_producers = {
+        buffer: op for op, buffers in op_output_buffers.items() for buffer in buffers
+    }
+
+    op_schedule_vars = {
+        op: [
+            pulp.LpVariable(f"O_{op},{step}", cat="Binary") for step in range(num_steps)
+        ]
+        for op in all_ops
+    }
+    buffer_stored_vars = {
+        buffer: [
+            pulp.LpVariable(f"T_{buffer},{step}", cat="Binary")
+            for step in range(num_steps)
+        ]
+        for buffer in all_buffers
+    }
+
+    mem = pulp.LpVariable("mem")
+
+    problem = pulp.LpProblem("ilp_peak_mem", pulp.LpMinimize)
+
+    # minimize peak memory
+    problem += mem
+
+    # constraint 1
+    # each operation can only be scheduled once
+    for op in all_ops:
+        problem += sum(op_schedule_vars[op]) == 1
+
+    # constraint 2
+    # each step can only schedule one op
+    problem += sum((op_schedule_vars[op][0] for op in all_ops)) == 0
+    for step in range(1, num_steps):
+        problem += sum((op_schedule_vars[op][step] for op in all_ops)) == 1
+
+    # constraint 3
+    # op can only be scheduled if its input buffers are available
+    for op in all_ops:
+        for step in range(1, num_steps):
+            for input in op_input_buffers[op]:
+                problem += (
+                    op_schedule_vars[op][step] <= buffer_stored_vars[input][step - 1]
+                )
+
+    # constraint 4
+    # a buffer is stored at time t if it was produced or stored at time t - 1
+    for buffer in all_buffers:
+        for step in range(1, num_steps):
+            problem += (
+                buffer_stored_vars[buffer][step]
+                <= buffer_stored_vars[buffer][step - 1]
+                + op_schedule_vars[buffer_producers[buffer]][step]
+            )
+
+    # constraint 5
+    # non-input buffers are not stored at step 0
+    for buffer in all_buffers - input_buffers:
+        problem += buffer_stored_vars[buffer][0] == 0
+
+    # constraint 6
+    # peak memory must be larger than all footprints
+    for step in range(num_steps):
+        transient_footprint = sum(
+            buffer_stored_vars[buffer][step] * buffer_sizes[buffer]
+            for buffer in all_buffers
+        )
+        for op in all_ops:
+            problem += (
+                transient_footprint + op_extra_sizes[op] * op_schedule_vars[op][step]
+                <= mem
+            )
+
+    # extra constraint
+    # ensure all graph outputs are live at the final step
+    for buffer in output_buffers:
+        problem += buffer_stored_vars[buffer][-1] == 1
+
+    # optimization constraints 7 and 8
+    # operator must be executed after all its ancestors
+    # buffer cannot be stored in memory until all its producers' ancestors have been executed
+    for op in all_ops:
+        num_ancestors = len(op_ancestors[op])
+        for step in range(1, num_ancestors + 1):
+            problem += op_schedule_vars[op][step] == 0
+            for buffer in op_output_buffers[op]:
+                problem += buffer_stored_vars[buffer][step] == 0
+
+    # optimization constraint 9
+    # operator must be executed before all its decendents
+    for op in all_ops:
+        # number of descendents is the number of ops which have this op as their ancestor
+        num_descendents = sum(
+            1 for ancestors in op_ancestors.values() if op in ancestors
+        )
+        for step in range(num_steps - num_descendents, num_steps):
+            problem += op_schedule_vars[op][step] == 0
+
+    # optimization removed since it conflicts with the extra constraint
+    # # optimization constraint 10
+    # # buffer can be removed once all its users have been executed
+    # for buffer in all_buffers:
+    #     uses = (op for op in all_ops if buffer in op_input_buffers[op])
+    #     num_descendents = [
+    #         sum(1 for ancestor in op_ancestors if op in ancestor) for op in uses
+    #     ]
+    #     max_descendents = max(num_descendents + [0])
+    #     for step in range(num_steps - max_descendents, num_steps):
+    #         problem += buffer_stored_vars[buffer][step] == 0
+
+    SOLVER_KIND = "PULP_CBC_CMD"
+    solver = pulp.getSolver(SOLVER_KIND, msg=True)
+    status = problem.solve(solver)
+    assert status == 1
+
+    op_timesteps = {}
+    for op in all_ops:
+        for step in range(num_steps):
+            if pulp.value(op_schedule_vars[op][step]) == 1:
+                op_timesteps[op] = step
+                break
+
+    assert len(op_timesteps) == num_ops
+
+    peak_mem = pulp.value(mem)
+    assert isinstance(peak_mem, float) and (peak_mem % 1) == 0.0
+    return op_timesteps, int(peak_mem)
+
+
+def ilp_sort(
+    nodes: list[BaseSchedulerNode],
+    name_to_freeable_input_buf: dict[str, FreeableInputBuffer],
+    name_to_fused_node: dict[str, BaseSchedulerNode],
+    graph_inputs: OrderedSet[str],
+    graph_outputs: OrderedSet[str],
+) -> list[BaseSchedulerNode]:
+    print(f"num_nodes={len(nodes)}")
+    buffer_sizes = {
+        name: buf.mpi_buffer.size_free
+        for node in nodes
+        for name, buf in node.outputs_by_name.items()
+    }
+    for name, buf in name_to_freeable_input_buf.items():
+        buffer_sizes[name] = buf.mpi_buffer.size_free
+    op_extra_sizes = {op.get_name(): 0 for op in nodes}
+    op_input_buffers = {
+        op.get_name(): {
+            dep.name for dep in op.unmet_dependencies if dep.name in buffer_sizes
+        }
+        for op in nodes
+    }
+    op_output_buffers = {op.get_name(): set(op.outputs_by_name.keys()) for op in nodes}
+    op_ancestors = {
+        op.get_name(): {
+            name_to_fused_node[ancestor].get_name()
+            for ancestor in op.ancestors
+            if name_to_fused_node[ancestor] != op
+        }
+        for op in nodes
+    }
+
+    input_buffers = {buf for buf in graph_inputs if buf in buffer_sizes}
+    output_buffers = {buf for buf in graph_outputs if buf in buffer_sizes}
+
+    order, _mem = ilp_peak_mem(
+        buffer_sizes,
+        op_extra_sizes,
+        op_input_buffers,
+        op_output_buffers,
+        op_ancestors,
+        input_buffers,
+        output_buffers,
+    )
+    print("ilp_peak_mem:", _mem)
+
+    sorted_nodes = sorted(nodes, key=lambda node: order[node.get_name()])
+    return sorted_nodes
 
 
 def reorder_for_peak_memory(
@@ -658,6 +902,7 @@ def reorder_for_peak_memory(
         topological_sort_lpmf,
         topological_sort_bfs,
         topological_sort_dfs,
+        ilp_sort,
     ],
 ) -> list[BaseSchedulerNode]:
     """
@@ -716,10 +961,10 @@ def reorder_for_peak_memory(
         )
         mem_usage.append(part_peak_memory)
 
-    highest_mem_index = mem_usage.index(max(mem_usage))
+    # highest_mem_index = mem_usage.index(max(mem_usage))
     breakpoint()
 
-    # TODO run ILP on every partition
+    # TODO run ILP on every partitions
 
     #  call methods upon the particular parts
     # for method in methods:
@@ -760,44 +1005,60 @@ def reorder_for_peak_memory(
     #
     #     torch_log.info("%s peak memory: %d", method.__name__, peak_memory)
 
-    # old methods
-    # for method in methods:
-    #     try:
-    #         if method == topological_sort_lpmf:
-    #             order = method(
-    #                 nodes, name_to_freeable_input_buf, name_to_buf, graph_outputs
-    #             )
-    #         else:
-    #             order = method(nodes)
-    #         assert len(order) == len(nodes)
-    #         peak_memory, _ = estimate_peak_memory(
-    #             order, name_to_freeable_input_buf, graph_outputs
-    #         )
-    #         peak_memory_diff_methods.append(
-    #             PeakMemoryResult(order, peak_memory, method.__name__)
-    #         )
-    #         torch_log.info("%s peak memory: %d", method.__name__, peak_memory)
-    #     except Exception as e:
-    #         torch_log.error("Failed to reorder for %s: %s", method.__name__, e)
-
-    # breakpoint()
-    # signpost_event(
-    #     category="inductor",
-    #     name="memory",
-    #     parameters={
-    #         "orm": {elem.method: elem.peak_memory for elem in peak_memory_diff_methods},
-    #     },
-    # )
-    #
-    # # get the optimal one
-    # best_result = min(peak_memory_diff_methods, key=lambda x: x.peak_memory)
-
-    breakpoint()
-
     # FIX THE mpi scheduling buffers
     # assign_memory_planning_info_for_scheduler_buffers(nodes, name_to_buf)
     # assign_memory_planning_info_for_scheduler_nodes(
     #     nodes, name_to_fused_node, name_to_buf, name_to_freeable_input_buf
     # )
+    # for part in partitions:
+#
 
-    return best_result.order
+  # other methods
+  # ilp_result = None
+  #  for method in methods:
+  #       try:
+  #           if method == topological_sort_lpmf:
+  #               order = method(
+  #                   nodes, name_to_freeable_input_buf, name_to_buf, graph_outputs
+  #               )
+  #           elif method == ilp_sort:
+  #               order = method(
+  #                   nodes,
+  #                   name_to_freeable_input_buf,
+  #                   name_to_fused_node,
+  #                   graph_inputs,
+  #                   graph_outputs,
+  #               )
+  #           else:
+  #               order = method(nodes)
+  #           assert len(order) == len(nodes)
+  #           peak_memory, _ = estimate_peak_memory(
+  #               order, name_to_freeable_input_buf, graph_outputs
+  #           )
+  #           peak_memory_diff_methods.append(
+  #               PeakMemoryResult(order, peak_memory, method.__name__)
+  #           )
+  #           if method == ilp_sort:
+  #               ilp_result = peak_memory_diff_methods[-1]
+  #           torch_log.info("%s peak memory: %d", method.__name__, peak_memory)
+  #       except Exception as e:
+  #           torch_log.error("Failed to reorder for %s: %s", method.__name__, e)
+  #
+  #   print([(res.peak_memory, res.method) for res in peak_memory_diff_methods])
+  #   signpost_event(
+  #       category="inductor",
+  #       name="memory",
+  #       parameters={
+  #           "orm": {elem.method: elem.peak_memory for elem in peak_memory_diff_methods},
+  #       },
+  #   )
+
+    # get the optimal one
+    # best_result = min(peak_memory_diff_methods, key=lambda x: x.peak_memory)
+    # print("best result method:", best_result.method)
+    # if ilp_result is not None:
+    #     print("choosing ilp_sort anyways")
+    #     return ilp_result.order
+    # print("ilp_sort never ran, using", best_result.method)
+    # return best_result.order
+    return None
