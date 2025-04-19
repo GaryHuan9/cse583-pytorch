@@ -604,6 +604,9 @@ def graph_partition(
     node_name_to_node = {}
     for node in all_nodes:
         node_name_to_node[node.get_name()] = node
+        if isinstance(node, FusedSchedulerNode):
+            for sub_node in node.get_nodes():
+                node_name_to_node[sub_node.get_name()] = sub_node
 
     # self.nodes[0].outputs[0].mpi_buffer.size_alloc
     for node in all_nodes:
@@ -650,6 +653,9 @@ def graph_partition(
     for i, part in enumerate(partitions):
         for node in part:
             node_name_to_part[node.get_name()] = i
+            if isinstance(node, FusedSchedulerNode):
+                for sub_node in node.get_nodes():
+                    node_name_to_part[sub_node.get_name()] = i
 
     part_inputs_outputs = []
 
@@ -658,25 +664,41 @@ def graph_partition(
     for part in partitions:
         inputs = []
         outputs = []
-        for node in part:
-            for anc_name in node.ancestors:
+        for node_orig in part:
+            for anc_name in node_orig.ancestors:
                 is_imm_pred = False
-                anc = node_name_to_node[anc_name]
-                for anc_succ in anc.outputs[0].mpi_buffer.succ_nodes:
-                    if (anc_succ.get_name() == node.get_name()):
-                        is_imm_pred = True
+                anc_orig = node_name_to_node[anc_name]
 
-                # found an immediate ancestor, add it's output buffer as an input to our partition
-                if is_imm_pred and node_name_to_part[anc.get_name()] != node_name_to_part[node.get_name()]:
-                    input_buf_name = anc.outputs[0].get_name()
-                    if input_buf_name not in inputs:
-                        inputs.append(input_buf_name)
+                anc_flat = []
 
-            for succ in node.outputs[0].mpi_buffer.succ_nodes:
-                if node_name_to_part[succ.get_name()] != node_name_to_part[node.get_name()]:
-                    output_buf_name = node.outputs[0].get_name()
-                    if output_buf_name not in outputs:
-                        outputs.append(output_buf_name)
+                if not isinstance(anc_orig, FusedSchedulerNode):
+                    anc_flat = [anc_orig]
+                else:
+                    anc_flat = anc_orig.get_nodes()
+
+                for anc in anc_flat:
+                    for anc_succ in anc.outputs[0].mpi_buffer.succ_nodes:
+                        if (anc_succ.get_name() == node.get_name()):
+                            is_imm_pred = True
+
+                    # found an immediate ancestor, add it's output buffer as an input to our partition
+                    if is_imm_pred and node_name_to_part[anc.get_name()] != node_name_to_part[node.get_name()]:
+                        input_buf_name = anc.outputs[0].get_name()
+                        if input_buf_name not in inputs:
+                            inputs.append(input_buf_name)
+
+            node_flat = []
+            if not isinstance(node_orig, FusedSchedulerNode):
+                node_flat = [node_orig]
+            else:
+                node_flat = node_orig.get_nodes()
+
+            for node in node_flat:
+                for succ in node.outputs[0].mpi_buffer.succ_nodes:
+                    if node_name_to_part[succ.get_name()] != node_name_to_part[node.get_name()]:
+                        output_buf_name = node.outputs[0].get_name()
+                        if output_buf_name not in outputs:
+                            outputs.append(output_buf_name)
         part_inputs_outputs.append((inputs, outputs))
 
     skip_cudagraphs = [True] * len(partitions)
@@ -687,7 +709,7 @@ def graph_partition(
     print(part_inputs_outputs)
     print(skip_cudagraphs)
 
-    return partitions
+    return partitions, part_inputs_outputs
 
 
 def ilp_peak_mem(
@@ -940,7 +962,7 @@ def reorder_for_peak_memory(
     )
     torch_log.info("Baseline peak memory: %d", estimated_peak_memory)
 
-    partitions = graph_partition(nodes)
+    partitions, part_io = graph_partition(nodes)
     print(partitions)
 
     breakpoint()
@@ -965,6 +987,24 @@ def reorder_for_peak_memory(
     breakpoint()
 
     # TODO run ILP on every partitions
+    all_orders = []
+    for i, part in enumerate(partitions):
+        try:
+            order = ilp_sort(
+                part,
+                name_to_freeable_input_buf,
+                name_to_fused_node,
+                part_io[i][0],
+                part_io[i][1],
+            )
+        except Exception as e:
+            torch_log.error("Failed to reorder for %s: %s", "ilp_sort", e)
+            order = part
+        all_orders.extend(order)
+
+    assert (len(all_orders) == len(nodes))
+
+    return all_orders
 
     #  call methods upon the particular parts
     # for method in methods:
@@ -1061,4 +1101,4 @@ def reorder_for_peak_memory(
     #     return ilp_result.order
     # print("ilp_sort never ran, using", best_result.method)
     # return best_result.order
-    return None
+    # return None
