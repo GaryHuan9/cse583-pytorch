@@ -630,7 +630,6 @@ def graph_partition(
                     graph[succ_idx].append((node_idx, weight))
 
     print(graph)
-    breakpoint()
     print("METIS METIS")
     metis_graph = metis.adjlist_to_metis(graph)
     k = 5
@@ -965,17 +964,16 @@ def reorder_for_peak_memory(
     partitions, part_io = graph_partition(nodes)
     print(partitions)
 
-    breakpoint()
     # the default
     mem_usage = []
     part_freeable_input_bufs = []
 
-    for part in partitions:
+    for i, part in enumerate(partitions):
+        part_freeable_input_buf = get_freeable_input_buf(part, part_io[i][0])
         assign_memory_planning_info_for_scheduler_buffers(part, name_to_buf)
         assign_memory_planning_info_for_scheduler_nodes(
-            part, name_to_fused_node, name_to_buf, name_to_freeable_input_buf
+            part, name_to_fused_node, name_to_buf, part_freeable_input_buf
         )
-        part_freeable_input_buf = get_freeable_input_buf(part, graph_inputs)
         part_freeable_input_bufs.append(part_freeable_input_buf)
 
         part_peak_memory, _ = estimate_peak_memory(
@@ -984,121 +982,28 @@ def reorder_for_peak_memory(
         mem_usage.append(part_peak_memory)
 
     # highest_mem_index = mem_usage.index(max(mem_usage))
-    breakpoint()
 
     # TODO run ILP on every partitions
     all_orders = []
+    total = 0
+    failed = 0
     for i, part in enumerate(partitions):
+        total += 1
         try:
             order = ilp_sort(
                 part,
-                name_to_freeable_input_buf,
+                part_freeable_input_bufs[i],
                 name_to_fused_node,
                 part_io[i][0],
                 part_io[i][1],
             )
         except Exception as e:
             torch_log.error("Failed to reorder for %s: %s", "ilp_sort", e)
+            failed += 1
             order = part
         all_orders.extend(order)
+    print(f"ilp failed on {failed}/{total}")
 
     assert (len(all_orders) == len(nodes))
 
     return all_orders
-
-    #  call methods upon the particular parts
-    # for method in methods:
-    #     orders = []
-    #     overall_peak_mem = 0
-    #     for i, part in enumerate(partitions):
-    #         order = []
-    #         try:
-    #             if method == topological_sort_lpmf:
-    #                 order = method(
-    #                     part, part_freeable_input_bufs[i], name_to_buf, graph_outputs
-    #                 )
-    #             else:
-    #                 order = method(part)
-    #             breakpoint()
-    #             assert len(order) == len(part)
-    #             peak_memory, _ = estimate_peak_memory(
-    #                 order, part_freeable_input_bufs[i], graph_outputs
-    #             )
-    #             overall_peak_mem = max(overall_peak_mem, peak_memory)
-    #
-    #         except Exception as e:
-    #             torch_log.error("Failed to reorder for %s: %s", method.__name__, e)
-    #             order = part
-    #
-    #         orders.append(order)
-    #         # fix nodes to be back all together
-    #     # print(orders)
-    #     all_nodes = []
-    #     for i, part in enumerate(partitions):
-    #         all_nodes.extend(orders[i])
-    #
-    #     print(f"{method.__name__} gives order: {all_nodes}")
-    #
-    #     peak_memory_diff_methods.append(
-    #         PeakMemoryResult(all_nodes, overall_peak_mem, method.__name__)
-    #     )
-    #
-    #     torch_log.info("%s peak memory: %d", method.__name__, peak_memory)
-
-    # FIX THE mpi scheduling buffers
-    # assign_memory_planning_info_for_scheduler_buffers(nodes, name_to_buf)
-    # assign_memory_planning_info_for_scheduler_nodes(
-    #     nodes, name_to_fused_node, name_to_buf, name_to_freeable_input_buf
-    # )
-    # for part in partitions:
-#
-
-  # other methods
-  # ilp_result = None
-  #  for method in methods:
-  #       try:
-  #           if method == topological_sort_lpmf:
-  #               order = method(
-  #                   nodes, name_to_freeable_input_buf, name_to_buf, graph_outputs
-  #               )
-  #           elif method == ilp_sort:
-  #               order = method(
-  #                   nodes,
-  #                   name_to_freeable_input_buf,
-  #                   name_to_fused_node,
-  #                   graph_inputs,
-  #                   graph_outputs,
-  #               )
-  #           else:
-  #               order = method(nodes)
-  #           assert len(order) == len(nodes)
-  #           peak_memory, _ = estimate_peak_memory(
-  #               order, name_to_freeable_input_buf, graph_outputs
-  #           )
-  #           peak_memory_diff_methods.append(
-  #               PeakMemoryResult(order, peak_memory, method.__name__)
-  #           )
-  #           if method == ilp_sort:
-  #               ilp_result = peak_memory_diff_methods[-1]
-  #           torch_log.info("%s peak memory: %d", method.__name__, peak_memory)
-  #       except Exception as e:
-  #           torch_log.error("Failed to reorder for %s: %s", method.__name__, e)
-  #
-  #   print([(res.peak_memory, res.method) for res in peak_memory_diff_methods])
-  #   signpost_event(
-  #       category="inductor",
-  #       name="memory",
-  #       parameters={
-  #           "orm": {elem.method: elem.peak_memory for elem in peak_memory_diff_methods},
-  #       },
-  #   )
-
-    # get the optimal one
-    # best_result = min(peak_memory_diff_methods, key=lambda x: x.peak_memory)
-    # print("best result method:", best_result.method)
-    # if ilp_result is not None:
-    #     print("choosing ilp_sort anyways")
-    #     return ilp_result.order
-    # print("ilp_sort never ran, using", best_result.method)
-    # return best_result.order
-    # return None
