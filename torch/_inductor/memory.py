@@ -705,6 +705,9 @@ def reorder_for_peak_memory(
 
     for part in partitions:
         assign_memory_planning_info_for_scheduler_buffers(part, name_to_buf)
+        assign_memory_planning_info_for_scheduler_nodes(
+            part, name_to_fused_node, name_to_buf, name_to_freeable_input_buf
+        )
         part_freeable_input_buf = get_freeable_input_buf(part, graph_inputs)
         part_freeable_input_bufs.append(part_freeable_input_buf)
 
@@ -716,41 +719,46 @@ def reorder_for_peak_memory(
     highest_mem_index = mem_usage.index(max(mem_usage))
     breakpoint()
 
+    # TODO run ILP on every partition
+
     #  call methods upon the particular parts
-    for method in methods:
-        orders = []
-        overall_peak_mem = 0
-        for i, part in enumerate(partitions):
-            order = []
-            try:
-                if method == topological_sort_lpmf:
-                    order = method(
-                        part, part_freeable_input_bufs[i], name_to_buf, graph_outputs
-                    )
-                else:
-                    order = method(part)
-                assert len(part) == len(part)
-                peak_memory, _ = estimate_peak_memory(
-                    order, part_freeable_input_bufs[i], graph_outputs
-                )
-                overall_peak_mem = max(overall_peak_mem, peak_memory)
-
-            except Exception as e:
-                torch_log.error("Failed to reorder for %s: %s", method.__name__, e)
-                order = part
-
-            orders.append(order)
-            # fix nodes to be back all together
-        print(orders)
-        all_nodes = []
-        for i, part in enumerate(partitions):
-            all_nodes.extend(orders[i])
-
-        peak_memory_diff_methods.append(
-            PeakMemoryResult(all_nodes, overall_peak_mem, method.__name__)
-        )
-
-        torch_log.info("%s peak memory: %d", method.__name__, peak_memory)
+    # for method in methods:
+    #     orders = []
+    #     overall_peak_mem = 0
+    #     for i, part in enumerate(partitions):
+    #         order = []
+    #         try:
+    #             if method == topological_sort_lpmf:
+    #                 order = method(
+    #                     part, part_freeable_input_bufs[i], name_to_buf, graph_outputs
+    #                 )
+    #             else:
+    #                 order = method(part)
+    #             breakpoint()
+    #             assert len(order) == len(part)
+    #             peak_memory, _ = estimate_peak_memory(
+    #                 order, part_freeable_input_bufs[i], graph_outputs
+    #             )
+    #             overall_peak_mem = max(overall_peak_mem, peak_memory)
+    #
+    #         except Exception as e:
+    #             torch_log.error("Failed to reorder for %s: %s", method.__name__, e)
+    #             order = part
+    #
+    #         orders.append(order)
+    #         # fix nodes to be back all together
+    #     # print(orders)
+    #     all_nodes = []
+    #     for i, part in enumerate(partitions):
+    #         all_nodes.extend(orders[i])
+    #
+    #     print(f"{method.__name__} gives order: {all_nodes}")
+    #
+    #     peak_memory_diff_methods.append(
+    #         PeakMemoryResult(all_nodes, overall_peak_mem, method.__name__)
+    #     )
+    #
+    #     torch_log.info("%s peak memory: %d", method.__name__, peak_memory)
 
     # old methods
     # for method in methods:
@@ -772,21 +780,24 @@ def reorder_for_peak_memory(
     #     except Exception as e:
     #         torch_log.error("Failed to reorder for %s: %s", method.__name__, e)
 
-    signpost_event(
-        category="inductor",
-        name="memory",
-        parameters={
-            "orm": {elem.method: elem.peak_memory for elem in peak_memory_diff_methods},
-        },
-    )
+    # breakpoint()
+    # signpost_event(
+    #     category="inductor",
+    #     name="memory",
+    #     parameters={
+    #         "orm": {elem.method: elem.peak_memory for elem in peak_memory_diff_methods},
+    #     },
+    # )
+    #
+    # # get the optimal one
+    # best_result = min(peak_memory_diff_methods, key=lambda x: x.peak_memory)
 
-    # get the optimal one
-    best_result = min(peak_memory_diff_methods, key=lambda x: x.peak_memory)
+    breakpoint()
 
     # FIX THE mpi scheduling buffers
-    assign_memory_planning_info_for_scheduler_buffers(nodes, name_to_buf)
-    assign_memory_planning_info_for_scheduler_nodes(
-        nodes, name_to_fused_node, name_to_buf, name_to_freeable_input_buf
-    )
+    # assign_memory_planning_info_for_scheduler_buffers(nodes, name_to_buf)
+    # assign_memory_planning_info_for_scheduler_nodes(
+    #     nodes, name_to_fused_node, name_to_buf, name_to_freeable_input_buf
+    # )
 
     return best_result.order
