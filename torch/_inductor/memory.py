@@ -997,6 +997,9 @@ def reorder_for_peak_memory(
                 part_io[i][0],
                 part_io[i][1],
             )
+            print(f"BEFORE ILP:{part}")
+            print(f"AFTER ILP:{order}")
+            print(f"ARE THEY THE SAME:{[x == y for x, y in zip(part, order)]}")
         except Exception as e:
             torch_log.error("Failed to reorder for %s: %s", "ilp_sort", e)
             failed += 1
