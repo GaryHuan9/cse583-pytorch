@@ -632,8 +632,13 @@ def graph_partition(
     print(graph)
     print("METIS METIS")
     metis_graph = metis.adjlist_to_metis(graph)
-    k = 5
-    part = metis.part_graph(metis_graph, k, contig=True)
+    k = 2
+    part = []
+
+    if k == 1:
+        part = (0, [0] * len(nodes))
+    else:
+        part = metis.part_graph(metis_graph, k, contig=True)
 
     part_assignments = part[1]
 
@@ -909,6 +914,7 @@ def ilp_sort(
     )
     print("ilp_peak_mem:", _mem)
 
+    print("ILP ORDER:", order)
     sorted_nodes = sorted(nodes, key=lambda node: order[node.get_name()])
     return sorted_nodes
 
