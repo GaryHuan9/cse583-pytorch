@@ -623,6 +623,7 @@ def graph_partition(
         else:  # fused
             sub_nodes = node.get_nodes()
             for sub_node in sub_nodes:
+                weight = sub_node.outputs[0].mpi_buffer.size_alloc
                 successor_set = sub_node.outputs[0].mpi_buffer.succ_nodes
                 for succ in successor_set:
                     succ_idx = node_name_to_index[succ.get_name()]
@@ -632,13 +633,13 @@ def graph_partition(
     print(graph)
     print("METIS METIS")
     metis_graph = metis.adjlist_to_metis(graph)
-    k = 2
+    k = 5
     part = []
 
     if k == 1:
         part = (0, [0] * len(nodes))
     else:
-        part = metis.part_graph(metis_graph, k, contig=True)
+        part = metis.part_graph(metis_graph, k, contig=False)
 
     part_assignments = part[1]
 
